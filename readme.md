@@ -1,3 +1,5 @@
+0. 预先准备：需要将阿里云百炼的 API-KEY 保存到环境变量`DASHSCOPE_API_KEY`中，关于如何申请，请参阅[这篇文章](https://github.com/NatsUIJM/autoContents/blob/main/docs/如何申请云服务账户.md)1.1部分的前4条。
+
 1. 下载程序
 
 ```bash
@@ -34,4 +36,3 @@ pip install -r requirements.txt
 ```bash
 python process.py /path/to/your/file.pdf
 ```
-
