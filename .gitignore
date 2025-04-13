@@ -1,0 +1,5 @@
+*/
+*.txt
+*.pdf
+!requirements.txt
+.DS_Store
