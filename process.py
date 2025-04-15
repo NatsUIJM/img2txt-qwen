@@ -15,11 +15,12 @@ import glob
 import re
 import argparse
 import sys
+import imghdr  # For image type detection
 
 # 创建必要的目录
-def create_directories(pdf_name):
-    # 创建与PDF文件同名的文件夹
-    base_dir = pdf_name.stem  # 不带扩展名的文件名
+def create_directories(file_name):
+    # 创建与文件同名的文件夹
+    base_dir = file_name.stem  # 不带扩展名的文件名
     os.makedirs(base_dir, exist_ok=True)
     
     # 在该文件夹中创建pic和txt子文件夹
@@ -167,6 +168,41 @@ def process_page(args):
         print(f"处理第{page_num+1}页时出错: {e}")
         return None
 
+# 处理单个图像文件：调整大小后进行OCR
+def process_image_file(args):
+    image_path, target_num, max_dim, pic_dir, txt_dir, rate_limiter = args
+    
+    try:
+        # 步骤1: 读取图像并调整大小
+        img = Image.open(image_path)
+        
+        # 计算调整大小后的尺寸
+        orig_width, orig_height = img.size
+        
+        if orig_width >= orig_height:
+            new_width = max_dim
+            new_height = int(orig_height * (max_dim / orig_width))
+        else:
+            new_height = max_dim
+            new_width = int(orig_width * (max_dim / orig_height))
+        
+        # 调整图片大小
+        img = img.resize((new_width, new_height), Image.LANCZOS)
+        
+        # 保存图片
+        img_path = os.path.join(pic_dir, f"{target_num}.jpg")
+        img.save(img_path, "JPEG", quality=95)
+        
+        print(f"已调整图像大小并保存为 {img_path}")
+        
+        # 步骤2: 立即对图片进行OCR处理
+        process_image(img_path, target_num, txt_dir, rate_limiter)
+        
+        return target_num
+    except Exception as e:
+        print(f"处理图像 {image_path} 时出错: {e}")
+        return None
+
 # OCR处理单个图片
 def process_image(image_path, page_num, txt_dir, rate_limiter, max_retries=5):
     retry_count = 0
@@ -232,7 +268,7 @@ def process_image(image_path, page_num, txt_dir, rate_limiter, max_retries=5):
                 return False
 
 # 合并所有文本文件为一个完整文件
-def merge_text_files(txt_dir, base_dir, pdf_name):
+def merge_text_files(txt_dir, base_dir, file_name):
     # 获取所有txt文件
     txt_files = glob.glob(os.path.join(txt_dir, "*.txt"))
     
@@ -248,7 +284,7 @@ def merge_text_files(txt_dir, base_dir, pdf_name):
     sorted_files = sorted(txt_files, key=extract_number)
     
     # 合并文件内容
-    output_path = os.path.join(base_dir, f"{pdf_name.stem}_完整文本.txt")
+    output_path = os.path.join(base_dir, f"{file_name.stem}_完整文本.txt")
     with open(output_path, "w", encoding="utf-8") as output_file:
         for i, file_path in enumerate(sorted_files, 1):
             with open(file_path, "r", encoding="utf-8") as input_file:
@@ -258,11 +294,32 @@ def merge_text_files(txt_dir, base_dir, pdf_name):
     print(f"已合并所有文本到: {output_path}")
     return output_path
 
+# 检查文件类型
+def check_file_type(file_path):
+    # 获取文件扩展名
+    ext = os.path.splitext(file_path)[1].lower()
+    
+    # 检查是否为PDF
+    if ext == '.pdf':
+        return 'pdf'
+    
+    # 检查是否为图像文件
+    image_extensions = ['.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.tif', '.gif']
+    if ext in image_extensions:
+        return 'image'
+    
+    # 如果扩展名不明确，尝试使用imghdr来检测
+    if imghdr.what(file_path) is not None:
+        return 'image'
+    
+    # 如果都不是则返回未知类型
+    return 'unknown'
+
 # 主函数
 def main():
     # 创建解析器
-    parser = argparse.ArgumentParser(description='PDF OCR处理工具')
-    parser.add_argument('pdf_path', type=str, help='PDF文件路径')
+    parser = argparse.ArgumentParser(description='文件OCR处理工具')
+    parser.add_argument('file_path', type=str, help='要处理的文件路径(PDF或图像)')
     
     # 解析参数
     try:
@@ -272,48 +329,67 @@ def main():
         sys.exit(1)
     
     # 检查文件是否存在
-    pdf_path = Path(args.pdf_path)
-    if not pdf_path.exists():
-        print(f"错误: 找不到PDF文件 '{pdf_path}'")
+    file_path = Path(args.file_path)
+    if not file_path.exists():
+        print(f"错误: 找不到文件 '{file_path}'")
         sys.exit(1)
     
-    print(f"开始处理PDF文件: {pdf_path}")
+    # 检查文件类型
+    file_type = check_file_type(file_path)
+    
+    if file_type == 'unknown':
+        print(f"错误: 不支持的文件类型 '{file_path}'")
+        print("支持的文件类型: PDF, JPG, JPEG, PNG, BMP, TIFF, GIF")
+        sys.exit(1)
+    
+    print(f"开始处理{file_type}文件: {file_path}")
     
     # 创建必要的目录
-    base_dir, pic_dir, txt_dir = create_directories(pdf_path)
+    base_dir, pic_dir, txt_dir = create_directories(file_path)
     
     # 创建高级速率限制器
     rate_limiter = AdvancedRateLimiter()
     
-    # 获取PDF总页数
-    try:
-        doc = fitz.open(pdf_path)
-        total_pages = len(doc)
-        doc.close()
-    except Exception as e:
-        print(f"打开PDF文件时出错: {e}")
-        sys.exit(1)
-    
-    print(f"PDF共有{total_pages}页")
-    
-    # 准备参数
+    # 基于文件类型进行不同处理
     max_dim = 1500
-    args_list = [(pdf_path, i, max_dim, pic_dir, txt_dir, rate_limiter) for i in range(total_pages)]
-    
-    # 使用线程池并行处理：转换图片并立即进行OCR
     max_workers = 30  # 更高的并发数，由速率限制器控制实际并发
-    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-        # 提交所有任务
-        futures = [executor.submit(process_page, args) for args in args_list]
+    
+    if file_type == 'pdf':
+        # 获取PDF总页数
+        try:
+            doc = fitz.open(file_path)
+            total_pages = len(doc)
+            doc.close()
+        except Exception as e:
+            print(f"打开PDF文件时出错: {e}")
+            sys.exit(1)
         
-        # 等待所有任务完成
-        for future in concurrent.futures.as_completed(futures):
-            result = future.result()
+        print(f"PDF共有{total_pages}页")
+        
+        # 准备参数
+        args_list = [(file_path, i, max_dim, pic_dir, txt_dir, rate_limiter) for i in range(total_pages)]
+        
+        # 使用线程池并行处理：转换图片并立即进行OCR
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+            # 提交所有任务
+            futures = [executor.submit(process_page, args) for args in args_list]
+            
+            # 等待所有任务完成
+            for future in concurrent.futures.as_completed(futures):
+                result = future.result()
+    
+    elif file_type == 'image':
+        # 处理单个图像文件
+        args = (file_path, 1, max_dim, pic_dir, txt_dir, rate_limiter)
+        process_image_file(args)
     
     # 合并所有文本文件
-    merged_file = merge_text_files(txt_dir, base_dir, pdf_path)
+    merged_file = merge_text_files(txt_dir, base_dir, file_path)
     
-    print(f"所有页面处理完成，完整文本文件保存在: {merged_file}")
+    if file_type == 'pdf':
+        print(f"所有页面处理完成，完整文本文件保存在: {merged_file}")
+    else:
+        print(f"图像处理完成，文本结果保存在: {merged_file}")
 
 if __name__ == "__main__":
     main()
