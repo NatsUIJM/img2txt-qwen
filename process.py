@@ -223,7 +223,7 @@ def process_image(image_path, page_num, txt_dir, rate_limiter, max_retries=5):
             
             # 发送请求
             completion = client.chat.completions.create(
-                model="qwen-vl-ocr",
+                model="qwen-vl-ocr-latest",
                 messages=[
                     {
                         "role": "user",
@@ -232,9 +232,11 @@ def process_image(image_path, page_num, txt_dir, rate_limiter, max_retries=5):
                                 "type": "image_url",
                                 "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"},
                                 "min_pixels": 28 * 28 * 4,
-                                "max_pixels": 28 * 28 * 1280
+                                "max_pixels": 28 * 28 * 8192
                             },
-                            {"type": "text", "text": "Read all the text in the image."},
+                            {"type": "text", "text": """Read all the text in the image. If there are formulas, please use LaTeX to represent them.
+
+"""},
                         ],
                     }
                 ],
@@ -266,6 +268,91 @@ def process_image(image_path, page_num, txt_dir, rate_limiter, max_retries=5):
                 with open(output_path, "w", encoding="utf-8") as f:
                     f.write(f"OCR处理失败: {e}")
                 return False
+
+# 获取PDF目录
+def get_pdf_toc(pdf_path):
+    try:
+        doc = fitz.open(pdf_path)
+        toc = doc.get_toc()
+        doc.close()
+        return toc
+    except Exception as e:
+        print(f"获取PDF目录失败: {e}")
+        return []
+
+# 按目录分割文本文件
+def split_text_by_toc(merged_file, txt_dir, base_dir, toc):
+    if not toc or len(toc) <= 1:
+        # 没有目录或目录项太少，直接返回
+        return [merged_file]
+    
+    try:
+        # 读取合并后的文本文件
+        with open(merged_file, 'r', encoding='utf-8') as f:
+            content = f.read()
+        
+        # 分割内容为各页面
+        pages = re.split(r'\n\n--- 第(\d+)页 ---\n\n', content)
+        pages = pages[2:]  # 跳过初始的空元素
+        
+        # 创建目录输出文件夹
+        toc_dir = os.path.join(base_dir, 'toc')
+        os.makedirs(toc_dir, exist_ok=True)
+        
+        # 用于存储每个目录项的起始页码
+        toc_pages = []
+        
+        # 提取目录中的页码信息
+        for entry in toc:
+            level, title, page = entry
+            if page >= 0:  # 确保是有效页码
+                toc_pages.append((page, title))
+        
+        # 如果第一个目录项不是第一页，添加一个虚拟目录项
+        if toc_pages and toc_pages[0][0] != 0:
+            toc_pages.insert(0, (0, "前言"))
+        
+        # 如果最后一个目录项的页码不是最后一页，添加一个虚拟目录项
+        last_page = len(pages) - 1
+        if toc_pages and toc_pages[-1][0] < last_page:
+            toc_pages.append((last_page, "结语"))
+        
+        # 按目录项生成文件
+        output_files = []
+        for i in range(len(toc_pages) - 1):
+            start_page, title = toc_pages[i]
+            end_page = toc_pages[i+1][0]
+            
+            # 清理标题作为文件名
+            safe_title = re.sub(r'[<>:"/\\|?*\x00-\x1F]', '', title)
+            safe_title = safe_title[:100]  # 限制长度
+            
+            # 防止重复标题
+            count = 1
+            original_title = safe_title
+            while os.path.exists(os.path.join(toc_dir, f"{safe_title}.txt")):
+                safe_title = f"{original_title}_{count}"
+                count += 1
+            
+            # 合并相关页面内容
+            section_content = ""
+            for p in range(start_page, end_page):
+                if p < len(pages):
+                    section_content += f"\n\n--- 第{p}页 ---\n\n{pages[p]}"
+            
+            # 保存文件
+            output_path = os.path.join(toc_dir, f"{safe_title}.txt")
+            with open(output_path, "w", encoding="utf-8") as f:
+                f.write(section_content)
+            
+            output_files.append(output_path)
+        
+        print(f"已按目录分割为 {len(output_files)} 个文件，保存在: {toc_dir}")
+        return output_files
+    
+    except Exception as e:
+        print(f"按目录分割文件时出错: {e}")
+        return [merged_file]
 
 # 合并所有文本文件为一个完整文件
 def merge_text_files(txt_dir, base_dir, file_name):
@@ -385,6 +472,12 @@ def main():
     
     # 合并所有文本文件
     merged_file = merge_text_files(txt_dir, base_dir, file_path)
+    
+    # 如果是PDF且存在目录，则按目录分割
+    if file_type == 'pdf':
+        toc = get_pdf_toc(file_path)
+        if toc:
+            split_text_by_toc(merged_file, txt_dir, base_dir, toc)
     
     if file_type == 'pdf':
         print(f"所有页面处理完成，完整文本文件保存在: {merged_file}")
