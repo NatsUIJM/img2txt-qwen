@@ -15,7 +15,7 @@ img2txt-qwen 是一个通过`qwen-vl-ocr`模型对 PDF 文件进行 OCR 处理�
 1. 下载程序
 
 ```bash
-git clone https://www.github.com/NatsUIJM/qwenOCRbyUIJM
+git clone https://www.github.com/NatsUIJM/img2txt-qwen
 ```
 
 2. 安装 ffmpeg
